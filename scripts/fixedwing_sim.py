@@ -39,7 +39,8 @@ class Simulator(Node):
         # ----------------------------------------------
         self.sub_joy = self.create_subscription(Joy, "/joy", self.joy_callback, 1)
         self.sub_auto_joy = self.create_subscription(
-            Joy, "/auto_joy", self.auto_joy_callback, 1)
+            Joy, "/auto_joy", self.auto_joy_callback, 1
+        )
 
         self.input_aetr = ca.vertcat(0.0, 0.0, 0.0, 0.0)
         self.input_auto = ca.vertcat(0.0, 0.0, 0.0, 0.0)
@@ -51,7 +52,7 @@ class Simulator(Node):
         # -------------------------------------------------------
         # mode handling
         # ----------------------------------------------
-        self.input_mode = "auto"
+        self.input_mode = "manual"
 
         # -------------------------------------------------------
         # Dynamics
@@ -74,9 +75,7 @@ class Simulator(Node):
         # init state (x), param(p), and input(u)
         self.state = np.array(list(self.x0_dict.values()), dtype=float)
         self.p = np.array(list(self.p_dict.values()), dtype=float)
-        # self.get_logger().info(f"p: {self.p}")
         self.u = np.zeros(4, dtype=float)
-
 
         # start main loop on timer
         self.system_clock = rclpy.clock.Clock(
@@ -88,7 +87,6 @@ class Simulator(Node):
             clock=self.system_clock,
         )
 
- 
     # Manual Joy AETR
     def joy_callback(self, msg: Joy):
         self.input_aetr = ca.vertcat(
@@ -118,63 +116,41 @@ class Simulator(Node):
             msg.axes[1],  # aileron
             msg.axes[2],  # elevator
             msg.axes[3],  # rudder
-        )    #TAER
+        )  # TAER
 
     def clock_as_msg(self):
         msg = Clock()
         msg.clock.sec = int(self.t)
         msg.clock.nanosec = int(1e9 * (self.t - msg.clock.sec))
         return msg
-    
 
     def update_controller(self):
         # ---------------------------------------------------------------------
         # mode handling
         # ---------------------------------------------------------------------
-        # if self.input_mode == "manual":
-        #     self.u = ca.vertcat( #TAER mode
-        #         float(self.input_aetr[2]),
-        #         float(self.input_aetr[0]),
-        #         float(self.input_aetr[1]),
-        #         float(self.input_aetr[3])
-        #         )
+        if self.input_mode == "manual":
+            self.u = ca.vertcat(  # TAER mode
+                float(self.input_aetr[2]),
+                float(self.input_aetr[0]),
+                float(self.input_aetr[1]),
+                float(self.input_aetr[3]),
+            )
 
-        # elif self.input_mode == "auto":
-        #     self.u = ca.vertcat( #TAER mode
-        #         float(self.input_auto[0]),
-        #         float(self.input_auto[1]), #scaled roll moment from rudder
-        #         float(self.input_auto[2]),
-        #         float(self.input_auto[3]) #Rudder directly affects yaw for nvp
-        #         )
-        # else:
-        #     self.get_logger().info("unhandled mode: %s" % self.input_mode)
-        #     self.u = ca.vertcat(
-        #         float(0),
-        #         float(0),
-        #         float(0),
-        #         float(0)
-        #         )
-        self.u = ca.vertcat( #TAER mode
-        float(self.input_auto[0]),
-        float(self.input_auto[1]), #scaled roll moment from rudder
-        float(self.input_auto[2]),
-        float(self.input_auto[3]) #Rudder directly affects yaw for nvp
-        )
-
-    
+        elif self.input_mode == "auto":
+            self.u = ca.vertcat(  # TAER mode
+                float(self.input_auto[0]),
+                float(self.input_auto[1]),  # scaled roll moment from rudder
+                float(self.input_auto[2]),
+                float(self.input_auto[3]),  # Rudder directly affects yaw for nvp
+            )
+        else:
+            self.get_logger().info("unhandled mode: %s" % self.input_mode)
+            self.u = ca.vertcat(float(0), float(0), float(0), float(0))
 
     def integrate_simulation(self):
         """
         Integrate the simulation one step and calculate measurements
         """
-        # self.u = ca.vertcat(
-        #     float(self.input_aetr[2]),
-        #     float(self.input_aetr[0]),
-        #     float(self.input_aetr[1]),
-        #     float(self.input_aetr[3])
-        #     )
-        # self.get_logger().info(f"control: {self.u}")
-
         try:
             # opts = {"abstol": 1e-9,"reltol":1e-9,"fsens_err_con": True,"calc_ic":True,"calc_icB":True}
             f_int = ca.integrator(
@@ -189,29 +165,17 @@ class Simulator(Node):
         if not np.all(np.isfinite(x1)):
             print("integration not finite")
             raise RuntimeError("nan in integration")
-        
+
         # ---------------------------------------------------------------------
         # store states and measurements
         # ---------------------------------------------------------------------
         self.state = np.array(res["xf"]).reshape(-1)
-        # self.x = self.state[0] 
-        # self.y = self.state[1]
-        # self.z = self.state[2]
-        # self.vx = self.state[3]
-        # self.vy = self.state[4]
-        # self.vz = self.state[5]
-
-        # self.get_logger().info(f"x: {self.x:0.2f}, vx: {self.vx:0.2f}")
-
-        # self.get_logger().info(f"F_b: {self.state[1]}")
-
 
         self.publish_state()
 
     def timer_callback(self):
-        self.update_controller()
-        self.integrate_simulation()
-        # self.get_logger().info(f"fx: {fx:0.2f}, fz: {fz:0.2f}")
+        self.update_controller()  # Controller
+        self.integrate_simulation()  # Integrator
         self.publish_state()
 
     def get_state_by_name(self, name):
@@ -235,16 +199,6 @@ class Simulator(Node):
         qy = self.get_state_by_name("quat_wb_2")
         qz = self.get_state_by_name("quat_wb_3")
 
-        # Logger output
-        # alpha = -1*float(ca.if_else(ca.fabs(vx) > 1e-1, ca.atan(vz/vx), ca.SX(0)))
-        # self.get_logger().info(f"alpha: {alpha:0.3f}")
-
-        # self.get_logger().info(f"x: {x:0.2f}, y: {y:0.2f}, z: {z:0.2f},\n vx: {vx:0.2f},  vy: {vy:0.2} vz: {vz:0.2f}")
-
-        # self.get_logger().info(f"x: {x:0.2f}, y: {y:0.2f}, z: {z:0.2f},\n vx: {vx:0.2f},  vy: {vy:0.2} vz: {vz:0.2f}")
-        # self.get_logger().info(f"wx: {wx:0.2f} wy: {wy:0.2f} wz: {wz:0.2f}")
-        # self.get_logger().info(f"qw: {qw:0.2f} qx: {qx:0.2f} qy: {qy:0.2f} qz{qz:0.2f}")
-
         # ------------------------------------
         # publish simulation clock
         # ------------------------------------
@@ -267,7 +221,6 @@ class Simulator(Node):
         tf.transform.rotation.y = qy
         tf.transform.rotation.z = qz
         self.tf_broadcaster.sendTransform(tf)
-
 
         # ------------------------------------
         # publish pose with covariance stamped
